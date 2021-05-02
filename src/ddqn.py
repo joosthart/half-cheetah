@@ -1,24 +1,28 @@
-
+import os
+import sys
+import warnings
 
 from tqdm import tqdm
+import mujoco_py
 import gym
 import numpy as np
 import tensorflow as tf
 
-from src.models import DenseModel
+from src.models import get_actor_model, get_critic_model
 
 SEED = 42
 
 class ExperienceBuffer:
     """Experience Buffer used for experience replay by DeepQLearning
     """
-    def __init__(self, max_buffer_size, obs_space):
+    def __init__(self, max_buffer_size, act_space, obs_space):
         self.max_buffer_size = int(max_buffer_size)
         self.obs_space = int(obs_space)
+        self.act_space = int(act_space)
 
         self.states = np.zeros((self.max_buffer_size, self.obs_space))
-        self.actions = np.zeros(self.max_buffer_size, dtype=int)
-        self.rewards = np.zeros(self.max_buffer_size)
+        self.actions = np.zeros((self.max_buffer_size, self.act_space))
+        self.rewards = np.zeros((self.max_buffer_size,1), dtype=np.float32)
         self.next_states = np.zeros((self.max_buffer_size, self.obs_space))
         self.done_flags = np.zeros(self.max_buffer_size, dtype=bool)
 
@@ -33,9 +37,9 @@ class ExperienceBuffer:
         self.rewards[self.row] = reward
         self.next_states[self.row] = next_state
         self.done_flags[self.row] = done_flag
-
-        self.size = max(self.size, self.row)
+        
         self.row = (self.row + 1) % self.max_buffer_size
+        self.size = max(self.size, self.row)
     
     def get_size(self):
         """Get the current size of the buffer
@@ -45,14 +49,11 @@ class ExperienceBuffer:
     def get_batch(self, batch_size):
         """Get a random batch from the buffer
         """
-        if batch_size > self.get_size:
-            raise ValueError(
-                'Batch size is too large. Batch size should be less than or '
-                'equal to current buffer size.'
-            )
+        if batch_size > self.get_size():
+            warnings.warn('Batch size is larger than curren buffer size.')
 
         idx = np.random.choice(
-            min(self.size, self.max_buffer_size), batch_size, replace=False
+            min(self.size, self.max_buffer_size), batch_size, replace=True
         )
         return (
             self.states[idx], 
@@ -67,86 +68,226 @@ class DeepDeterministicPolicyGradient:
     def __init__(self, environ='HalfCheetah-v2', **kwargs):
 
         self.env = gym.make(environ)
-
-        self.env.seed(kwargs.get('seed', np.random.randint(1e9)))
-
+        # self.env.seed(kwargs.get('seed', np.random.randint(1e9)))
         self.num_states = self.env.observation_space.shape[0]
-        self.num_actions = self.env.action_space.n
+        self.num_actions = self.env.action_space.shape[0]
+        self.lower_bounds = self.env.action_space.low
+        self.upper_bounds = self.env.action_space.high
 
         self.memory = ExperienceBuffer(
-            kwargs.get('buffer_size', 1e6),
+            kwargs.get('buffer_size', 50000),
+            self.num_actions,
             self.num_states
         )
+        self.batch_size = kwargs.get('batch_size', 64)
 
-        self.polyak = None
-        
-        self.target_model = None
-        self.policy = None
-        
+        self.polyak = kwargs.get('polyak', 0.005)
+        self.gamma = kwargs.get('gamma', 0.99)
+        self.action_noise = kwargs.get('action_noise', 0.2)
 
-    def compute_targets(self, reward, next_state, done):
-        q_next = self.target_model(next_state, self.policy(next_state))
-        return reward + self.gamma*(1-done)*q_next
+        lr_actor = kwargs.get('lr_actor', 0.001)
+        lr_critic = kwargs.get('lr_critic', 0.002)
 
-    def update_policy(self):
-        pass
-
-    def update_q_function(self):
-        pass
-
-    def update_target_model(self):
-        target_weights = self.target_model.get_weights()
-        train_weights = self.train_model.get_weights()
-        self.target_model.set_weights(
-            self.polyak*target_weights + (1-self.polyak)*train_weights
+        self.actor_model = get_actor_model(
+            self.num_states,
+            self.num_actions,
+            self.upper_bounds
+        )
+        self.target_actor_model = get_actor_model(
+            self.num_states,
+            self.num_actions,
+            self.upper_bounds
         )
 
-    def get_action(self, state):
-        pass
+        self.critic_model = get_critic_model(
+            self.num_states,
+            self.num_actions
+        )
+        self.target_critic_model = get_critic_model(
+            self.num_states,
+            self.num_actions
+        )
 
-    def train(self):
+        self.target_actor_model.set_weights(self.actor_model.get_weights())
+        self.target_critic_model.set_weights(self.critic_model.get_weights())
+
+        self.actor_model_optimizer = tf.keras.optimizers.Adam(lr_actor)
+        self.critic_model_optimizer = tf.keras.optimizers.Adam(lr_critic)
+
+
+    # @tf.function
+    def train_one_batch(
+        self, critic_model, actor_model, target_critic_model, target_actor_model
+    ):
         
-        
-        states, actions, rewards, next_states, done_flags = \
+        states, actions, rewards, next_states, _ = \
             self.memory.get_batch(self.batch_size)
         
-        targets = self.compute_targets(rewards, next_states, done_flags)
+        with tf.GradientTape() as tape:
+            target_actions = target_actor_model(next_states, training=True)
+            next_q = target_critic_model(
+                [next_states, target_actions], 
+                training=True
+            )
 
-        self.model.train(states, targets)
+            target_q = rewards + self.gamma * next_q
+            pred_q = critic_model([states, actions], training=True)
 
+            critic_loss = tf.math.reduce_mean(tf.math.square(target_q - pred_q))
 
-    def fit(self, max_steps, verbose=True):
-        
+        critic_gradient = tape.gradient(
+            critic_loss, 
+            critic_model.trainable_variables
+        )
+        self.critic_model_optimizer.apply_gradients(
+            zip(critic_gradient, critic_model.trainable_variables)
+        )
+
+        with tf.GradientTape() as tape:
+            pred_actions = actor_model(states, training=True)
+            pred_q =critic_model([states, pred_actions], training=True)
+
+            actor_loss = -tf.math.reduce_mean(pred_q)
+
+        actor_gradient = tape.gradient(
+            actor_loss,
+            actor_model.trainable_variables
+        )
+        self.actor_model_optimizer.apply_gradients(
+            zip(actor_gradient, actor_model.trainable_variables)
+        )
+
+        return critic_model, actor_model
+
+    @tf.function
+    def polyak_update_target(self, target_weights, weights, polyak):
+        for wt, w in zip(target_weights, weights):
+            wt.assign(w * polyak + wt*(1-polyak))
+    
+    def policy(self, state, std_noise):
+        # obtain new model
+        action = self.actor_model(state)
+        # sample noise
+        noise = np.random.normal(0, std_noise)
+        # Add normal noice to selected action
+        action = action + noise
+        # Clip action within bounds
+        action = np.clip(action, self.lower_bounds, self.upper_bounds)
+
+        return np.squeeze(action)
+
+    def train(self, num_episodes, verbose=True, render_every=sys.maxsize, 
+              save=None):
+
         self.total_training_reward = []
-        self.total_training_loss = []
+        self.average_training_reward = []
 
         if verbose:
-            pbar = tqdm(range(max_steps))
+            pbar = tqdm(range(num_episodes))
         else:
-            pbar = range(max_steps)
-        
-        state = self.env.reset()
-        for epoch in pbar:
-            # Select action
-            action = self.get_action(state)
+            pbar = range(num_episodes)
 
-            # Execute action
-            next_state, reward, done, _ = self.env.step(action)
+        for episode in pbar:
 
-            # accumulate experience
-            self.memory.add(state, action, reward, next_state, done)
+            state = self.env.reset()
+            episode_reward = 0
+            done = False
 
-            if done:
-                state = self.env.reset()
-            else:
+            while not done:
+
+                if verbose and episode != 0 and episode % render_every == 0:
+                    self.env.render()
+
+                state_expanded = tf.expand_dims(state, axis=0)
+
+                action = self.policy(state_expanded, self.action_noise)
+                next_state, reward, done, _ = self.env.step(action)
+
+                episode_reward += reward
+
+                self.memory.add(state, action, reward, next_state, done)                
+
+                
+                self.critic_model, self.actor_model = self.train_one_batch(
+                    self.critic_model, 
+                    self.actor_model, 
+                    self.target_critic_model, 
+                    self.target_actor_model
+                )
+
+                self.polyak_update_target(
+                    self.target_actor_model.variables, 
+                    self.actor_model.variables, 
+                    0.005
+                )
+                self.polyak_update_target(
+                    self.target_critic_model.variables, 
+                    self.critic_model.variables, 
+                    0.005
+                )
+
                 state = next_state
             
-            if True: # some condition on training
-                for i in []: # some number of updates
-                    # Train one batch
-                    self.train()
-                    # update the target models
-                    self.update_target_model()
+            self.total_training_reward.append(float(episode_reward))
+
+            if verbose:
+                pbar.set_postfix(
+                    {
+                        'Rolling reward': '{:.1f}'.format(
+                            np.mean(self.total_training_reward[-40:])
+                        )
+                    }
+                )
+            self.average_training_reward.append(
+                np.mean(self.total_training_reward[-40:])
+            )
+
+            if (save and episode > 0 and
+                self.average_training_reward[-1] > self.average_training_reward[-2]):
+                
+                self.actor_model.save(os.path.join(save, 'actor'))
+                self.critic_model.save(os.path.join(save, 'critic'))
+            
+        
+        import matplotlib.pyplot as plt
+
+        plt.plot(self.average_training_reward)
+        plt.xlabel("Episode")
+        plt.ylabel("Average Epsiodic Reward")
+        plt.show()
+
+    def simulate(self, model=None, episodes=1):
+
+        if model:
+            self.actor_model = tf.keras.models.load_model(
+                os.path.join(model, 'actor')
+            )
+
+        for episode in range(episodes):
+
+            state = self.env.reset()
+            episode_reward = 0
+            done = False
+
+            while not done:
+                self.env.render()
+
+                state_expanded = tf.expand_dims(state, axis=0)
+
+                action = self.policy(state_expanded, self.action_noise)
+                next_state, reward, done, _ = self.env.step(action)
+
+                episode_reward += reward
+
+                state = next_state
+            
+            print('episode {:>3.0f}: {:>5.0f}'.format(episode, episode_reward))
+
+
+
+    
+
+
 
 
 
