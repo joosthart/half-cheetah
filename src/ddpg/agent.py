@@ -149,7 +149,7 @@ class DeepDeterministicPolicyGradient:
         """
         
         # Sample batch from buffer
-        states, actions, rewards, next_states = \
+        states, actions, rewards, next_states, _ = \
             self.memory.get_batch(self.batch_size)
         
         with tf.GradientTape() as tape:

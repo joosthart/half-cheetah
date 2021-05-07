@@ -1,6 +1,6 @@
 from multiprocessing import Pool
 import os
-from agent import *
+from src.mcpg.agent import *
 import matplotlib.pyplot as plt
 
 # plt.style.use('thesis.mplstyle')

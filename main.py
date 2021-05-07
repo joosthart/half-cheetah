@@ -1,49 +1,50 @@
-
-
-
+import argparse
+import os
 
 from src.ddpg.agent import DeepDeterministicPolicyGradient
 from src.ddpg.experiments import run_all_experiments as ddpg_experiment_run
 from src.mcpg.experiments import run_all_experiments as mcpg_experiment_run
 
+parser = argparse.ArgumentParser(
+    description='MuJoCo Reinforcement learning project.'
+)
+
+parser.add_argument(
+    '-r', '--run-experiments', 
+    default='',
+    type=str,
+    help='Run experiments. Options: "ALL", "DDPG", "MCPG"'
+)
+
+parser.add_argument(
+    '-s', '--simulate', 
+    action='store_true',
+    help='Display simulations of DDPG algorithms on HalfCheetah-v2.'
+)
+
+parser.add_argument(
+    '-e', '--episodes', 
+    default=3,
+    type=int,
+    help='Number of episodes to run simulation.'
+)
+
+args = parser.parse_args()
+
 if __name__ == '__main__':
 
-    # polyak()
+    if not os.path.exists('models/'):
+        os.makedirs('models/')
 
-    # params_Lillicrap = {
-    #     'lr_actor': 1e-4,
-    #     'lr_critic': 1e-3,
-    #     'gamma': 0.99,
-    #     'polyak': 0.001,
-    #     'batch_size': 64,
-    #     'buffer_size': 1e6,
-    #     'actor_hidden': [300, 400],
-    #     'critic_hidden_state': [300],
-    #     'critic_hidden_action': [],
-    #     'critic_hidden_common': [400],
-    #     'critic_init_min':-3e-4,
-    #     'critic_init_max':3e-4
+    if args.simulate:
+        model = DeepDeterministicPolicyGradient()
+        model.simulate('demo', args.episodes)
 
-    # }
-
+    if args.run_experiments and args.run_experiments.lower() == 'all':
+        ddpg_experiment_run()
+        mcpg_experiment_run()
+    elif args.run_experiments and args.run_experiments.lower() == 'ddpg':
+        ddpg_experiment_run()
+    elif args.run_experiments and args.run_experiments.lower() == 'mcpg':
+        mcpg_experiment_run()
     
-    # estimator.train(150, render_every=1e4, save='models/Lillicrap')
-
-    print('lillicrap_no_action_layer')
-    print(50*'-')
-    for idx, p in enumerate([0.001, 0.005, 0.01, 0.05]):
-        estimator = DeepDeterministicPolicyGradient()
-        model = 'models/lillicrap_no_action_layer/polyak={}/'.format(p)
-        mean, std = estimator.simulate(model, 100, render=False, verbose=False)
-
-        print(p, ': ', mean, '+/-', std)
-
-    print('lillicrap_action_layer')
-    print(50*'-')
-    for idx, p in enumerate([0.001, 0.005, 0.01, 0.05]):
-        estimator = DeepDeterministicPolicyGradient()
-        model = 'models/lillicrap_action_layer/polyak={}/'.format(p)
-        mean, std = estimator.simulate(model, 100, render=False, verbose=False)
-
-        print(p, ': ', mean, '+/-', std)
-        
