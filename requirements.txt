@@ -1,0 +1,8 @@
+gym==0.18.0
+matplotlib==3.4.1
+mujoco-py==2.0.2.13
+numpy==1.20.2
+scipy==1.6.2
+-e git+https://github.com/joosthart/half-cheetah@240ab5a00de4904079fc13adb248cf992dfaa471#egg=src
+tensorflow==2.4.1
+tqdm==4.60.0
