@@ -129,8 +129,9 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# models dir
-models/
-
 # Notebooks
 notebooks/
+
+# outputs
+models/
+figures/
