@@ -27,7 +27,7 @@ All options can be displayed using:
 ```
 python main.py --help
 ```
-## Acknoledgments
+## acknowledgements
 We had help from some very good blogs and code examples. Below a list of the most helpful ones.
 
 - https://spinningup.openai.com/en/latest/algorithms/ddpg.html
